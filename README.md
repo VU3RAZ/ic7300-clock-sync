@@ -8,14 +8,39 @@ Automatically synchronises the Icom IC-7300 real-time clock via CI-V over USB wh
 2. udev sets the device group to `plugdev` and runs `systemctl --no-block start ic7300-clock-sync.service`.
 3. The **systemd oneshot service** runs `ic7300_clock_sync.py` as your user, waits 2 s for the radio's CI-V stack to settle, then syncs date and time.
 
-## Requirements
+## What you need
 
-- Linux with systemd and udev (standard on Ubuntu/Debian/Fedora)
-- Python 3.10+
-- Python packages: `pyserial`, `ntplib`
+### Hardware
+- Icom IC-7300 transceiver
+- USB-A to USB-B cable (the standard square-connector cable supplied with the radio)
+- Linux PC — Ubuntu 20.04+ / Debian 11+ / Fedora 36+ or any distro with systemd 245+
+
+### Software
+- `systemd` and `udev` — standard on all the above distros, nothing extra to install
+- `Python 3.10` or newer
+- Python packages `pyserial` and `ntplib`:
 
 ```bash
 pip install pyserial ntplib
+```
+
+### Radio settings
+
+Three menu items on the IC-7300 must be set correctly before the sync will work:
+
+| Menu path | Setting | Required value |
+|-----------|---------|----------------|
+| MENU > SET > Connectors > CI-V > CI-V Baud Rate | Baud rate | `115200` |
+| MENU > SET > Connectors > CI-V > CI-V Address | Radio CI-V address | `94h` (factory default) |
+| MENU > SET > Connectors > CI-V > CI-V Echo | Echo back | `OFF` |
+
+### Linux user permissions
+
+Your Linux user must be a member of either the `dialout` or `plugdev` group to open the serial port. The install script adds you to `dialout` automatically, but it only takes effect after you log out and back in.
+
+Check your current groups:
+```bash
+groups $USER
 ```
 
 ## Files
@@ -24,16 +49,16 @@ pip install pyserial ntplib
 |------|---------|
 | `ic7300_clock_sync.py` | Main sync script — can also be run manually |
 | `99-ic7300-clock-sync.rules` | udev rule — triggers on USB connect |
-| `ic7300-clock-sync.service` | systemd oneshot service unit |
-| `install.sh` | Installs the udev rule and service (run once as root) |
+| `ic7300-clock-sync.service` | systemd oneshot service unit (template — filled in by install script) |
+| `install.sh` | One-time setup: installs the rule and service, adds user to dialout |
 
 ## Installation
 
-### 1. Clone or download this folder
+### 1. Clone this repo
 
 ```bash
-git clone <repo-url> ~/code/icomremote
-cd ~/code/icomremote
+git clone https://github.com/VU3RAZ/ic7300-clock-sync
+cd ic7300-clock-sync
 ```
 
 ### 2. Install Python dependencies
@@ -49,9 +74,10 @@ sudo bash install.sh
 ```
 
 This will:
-- Copy `99-ic7300-clock-sync.rules` to `/etc/udev/rules.d/` and reload udev
-- Copy `ic7300-clock-sync.service` to `/etc/systemd/system/` and reload systemd
-- Add your user to the `dialout` group (takes effect at next login)
+- Substitute your username and Python path into the service file
+- Copy `99-ic7300-clock-sync.rules` → `/etc/udev/rules.d/` and reload udev
+- Copy the configured service → `/etc/systemd/system/` and reload systemd
+- Add your user to the `dialout` group (log out and back in for this to take effect)
 
 ### 4. Plug in the IC-7300
 
@@ -77,6 +103,8 @@ A successful sync looks like:
 09:40:00  INFO     ✓  IC-7300 clock synced to 2026-04-14 09:40 Local  [NTP]
 ```
 
+The script waits for the next full minute boundary before sending, so there can be up to 60 seconds between plug-in and the actual sync. This gives precise to-the-minute accuracy since CI-V cannot set seconds.
+
 To follow the log live while plugging in:
 
 ```bash
@@ -97,6 +125,9 @@ python3 ic7300_clock_sync.py -p /dev/ttyUSB0
 # Send UTC instead of local time
 python3 ic7300_clock_sync.py --utc
 
+# Skip waiting for the minute boundary (send immediately)
+python3 ic7300_clock_sync.py --no-wait
+
 # Preview CI-V frames without transmitting
 python3 ic7300_clock_sync.py --dry-run
 
@@ -107,49 +138,37 @@ python3 ic7300_clock_sync.py --list-ports
 python3 ic7300_clock_sync.py -v
 ```
 
-## Radio configuration
-
-Verify these settings on the IC-7300 before first use:
-
-| Menu path | Setting | Value |
-|-----------|---------|-------|
-| MENU > SET > Connectors > CI-V > CI-V Baud Rate | Baud rate | `115200` (must match `BAUD_RATE` in script) |
-| MENU > SET > Connectors > CI-V > CI-V Address | Radio address | `94h` (default, matches `CIV_RADIO_ADDR`) |
-| MENU > SET > Connectors > CI-V > CI-V Echo | Echo | `OFF` |
-
 ## Troubleshooting
 
-**Sync incomplete / no OK response**
-- Confirm CI-V baud rate in the radio menu matches `BAUD_RATE` in the script (default 115200).
+**Sync incomplete / no OK response from radio**
+- Confirm CI-V baud rate in the radio menu is `115200`.
 - Confirm CI-V address is `94h`.
 - Turn CI-V Echo **OFF** in the radio menu.
-- Run with `-v` to see raw CI-V byte traces.
+- Run `python3 ic7300_clock_sync.py -v` to see raw CI-V byte traces.
 
 **Port not detected**
-- Run `python3 ic7300_clock_sync.py --list-ports` to see all connected serial devices.
-- On Linux, confirm your user is in the `dialout` or `plugdev` group: `groups $USER`. Log out and back in after the install script adds you.
+- Run `python3 ic7300_clock_sync.py --list-ports` to list all serial devices.
+- Confirm your user is in `dialout` or `plugdev`: `groups $USER`. Log out and back in after the install script adds you.
 
 **Service never starts after plug-in**
 
-First verify the rule is matching and the service starts correctly on its own:
+First confirm the rule matches and the service works on its own:
 
 ```bash
-# Confirm the rule matches the device
+# Confirm the udev rule matches the device
 udevadm test /sys/class/tty/ttyUSB0 2>&1 | grep ic7300
 
-# Start the service manually to confirm it works
+# Start the service manually to confirm it works end-to-end
 systemctl start ic7300-clock-sync.service
 journalctl -u ic7300-clock-sync.service -n 20
 ```
 
-If the manual start works but plug-in doesn't trigger it, reload and replay:
+If the manual start works but plug-in doesn't trigger it, re-run the install and replay the event without unplugging:
 
 ```bash
 sudo bash install.sh
-sudo systemctl daemon-reload
-sudo udevadm control --reload-rules
 
-# Replay the plug-in event without unplugging:
+# Replay the plug-in event for the currently connected radio:
 sudo udevadm trigger --action=add --subsystem-match=tty --attr-match=idVendor=10c4
 
 # Check the result:
