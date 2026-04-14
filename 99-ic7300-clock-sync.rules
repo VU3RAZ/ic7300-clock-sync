@@ -1,0 +1,18 @@
+# Icom IC-7300 — auto clock sync on USB connect
+#
+# Matches the Silicon Labs CP210x USB-serial bridge used by the IC-7300.
+# Sets device group to 'plugdev' so the sync script can open the port
+# without root, then uses systemd-run to start
+# the oneshot sync service directly from the udev event.
+#
+# Install:
+#   sudo cp 99-ic7300-clock-sync.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+
+ACTION=="add", \
+    SUBSYSTEM=="tty", \
+    ATTRS{idVendor}=="10c4", \
+    ATTRS{idProduct}=="ea60", \
+    GROUP="plugdev", \
+    MODE="0660", \
+    RUN+="/bin/systemctl --no-block start ic7300-clock-sync.service"

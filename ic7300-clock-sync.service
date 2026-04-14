@@ -1,0 +1,20 @@
+[Unit]
+Description=Icom IC-7300 Clock Sync
+
+[Service]
+Type=oneshot
+User=__USER__
+
+# Brief settle delay — the tty node exists but the radio firmware may still be
+# initialising its CI-V stack when udev fires.
+ExecStartPre=/bin/sleep 2
+
+ExecStart=__PYTHON__ __SCRIPT__
+
+# Log to the journal so you can check results with:
+#   journalctl -u ic7300-clock-sync.service -n 40
+StandardOutput=journal
+StandardError=journal
+
+# Don't restart on failure — if the sync fails the next plug-in will retry.
+Restart=no
