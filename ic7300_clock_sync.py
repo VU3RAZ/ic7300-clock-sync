@@ -328,26 +328,40 @@ def build_set_time(dt: datetime.datetime, radio: int, ctrl: int) -> bytes:
     ]))
 
 
-def read_until_fd(ser: serial.Serial, timeout: float = 2.0) -> bytes:
-    """Read from serial port until 0xFD terminator or timeout."""
+def read_until_ok(ser: serial.Serial, radio: int, ctrl: int,
+                  timeout: float = 3.0) -> bytes:
+    """
+    Read from the serial port until an OK (FB) or NG (FA) response from the
+    radio is found, or until timeout.
+
+    The IC-7300 sends CI-V Transceive broadcasts (frequency, mode, etc.) that
+    are terminated with 0xFD — exactly like a real response frame.  Stopping
+    at the first 0xFD therefore often catches a broadcast instead of the OK,
+    causing false "no response" failures.  This function reads past any number
+    of broadcast frames and returns only when it finds the specific OK/NG reply
+    addressed back to the controller, or when the timeout expires.
+    """
     buf      = bytearray()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         n = ser.in_waiting
         if n:
             buf.extend(ser.read(n))
-            if 0xFD in buf:
-                break
+            # Scan for OK (FB) or NG (FA) addressed to the controller
+            for i in range(len(buf) - 5):
+                if (buf[i]   == 0xFE and buf[i+1] == 0xFE and
+                        buf[i+2] == ctrl and buf[i+3] == radio and
+                        buf[i+4] in (0xFB, 0xFA)):
+                    return bytes(buf)          # found what we need
         else:
             time.sleep(0.02)
-    return bytes(buf)
+    return bytes(buf)                          # timeout — return whatever we got
 
 
 def parse_ok(response: bytes, radio: int, ctrl: int) -> bool:
     """
-    Scan response buffer for OK (FB) or NG (FA) from radio.
-    Returns True for OK, False otherwise.
-    Echo frames (swapped addresses) are automatically skipped.
+    Scan buffer for OK (FB) or NG (FA) from radio addressed to controller.
+    Returns True for OK, False for NG or nothing found.
     """
     i = 0
     while i <= len(response) - 6:
@@ -362,24 +376,31 @@ def parse_ok(response: bytes, radio: int, ctrl: int) -> bool:
     return False
 
 
-def send_command(ser:   serial.Serial,
-                 frame: bytes,
-                 radio: int,
-                 ctrl:  int,
-                 label: str) -> bool:
-    """Transmit one CI-V frame and verify the OK response."""
-    log.debug(f"TX [{label}]: {frame.hex(' ').upper()}")
-    ser.write(frame)
-    time.sleep(0.15)
-    response = read_until_fd(ser)
-    log.debug(f"RX [{label}]: {response.hex(' ').upper()}")
+def send_command(ser:     serial.Serial,
+                 frame:   bytes,
+                 radio:   int,
+                 ctrl:    int,
+                 label:   str,
+                 retries: int = 3) -> bool:
+    """Transmit one CI-V frame and verify the OK response, retrying on failure."""
+    for attempt in range(1, retries + 1):
+        log.debug(f"TX [{label}] attempt {attempt}: {frame.hex(' ').upper()}")
+        ser.reset_input_buffer()
+        ser.write(frame)
+        time.sleep(0.15)
+        response = read_until_ok(ser, radio, ctrl)
+        log.debug(f"RX [{label}] attempt {attempt}: {response.hex(' ').upper()}")
 
-    ok = parse_ok(response, radio, ctrl)
-    if ok:
-        log.info(f"  {label}  ✓")
-    else:
-        log.warning(f"  {label}  — no OK response")
-    return ok
+        if parse_ok(response, radio, ctrl):
+            log.info(f"  {label}  ✓" + (f" (attempt {attempt})" if attempt > 1 else ""))
+            return True
+
+        log.warning(f"  [{label}] attempt {attempt}/{retries} — no OK response")
+        if attempt < retries:
+            time.sleep(1.5)
+
+    log.error(f"  {label}  — failed after {retries} attempts")
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

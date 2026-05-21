@@ -1,20 +1,26 @@
 [Unit]
 Description=Icom IC-7300 Clock Sync
+# Bind to the stable symlink device unit created by the udev rule (SYMLINK+="ic7300").
+# systemd starts this service when the device appears — at boot or on hot-plug —
+# and stops it if the device is removed mid-run.
+BindsTo=dev-ic7300.device
+After=dev-ic7300.device
 
 [Service]
 Type=oneshot
 User=__USER__
 
-# Brief settle delay — the tty node exists but the radio firmware may still be
-# initialising its CI-V stack when udev fires.
-ExecStartPre=/bin/sleep 2
+# Give the CP210x driver and radio CI-V firmware time to initialise fully.
+# 5 s is enough for the radio firmware; the USB enumeration takes ~2 s on its own.
+ExecStartPre=/bin/sleep 5
 
-ExecStart=__PYTHON__ __SCRIPT__
+# Pass the stable symlink so the script never has to scan for the port.
+ExecStart=__PYTHON__ __SCRIPT__ -p /dev/ic7300
 
 # Log to the journal so you can check results with:
 #   journalctl -u ic7300-clock-sync.service -n 40
 StandardOutput=journal
 StandardError=journal
 
-# Don't restart on failure — if the sync fails the next plug-in will retry.
+# Don't auto-restart — the next plug or boot will retry cleanly.
 Restart=no
